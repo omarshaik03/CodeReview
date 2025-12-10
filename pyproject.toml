@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "code-review-assistant"
+version = "0.2.0"
+description = "FastAPI service that ingests Git commit history and generates LangChain-powered LLM code reviews."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "Max", email = "max@example.com" }
+]
+
+dependencies = [
+  "GitPython>=3.1.43",
+  "langchain>=0.2.10",
+  "langchain-openai>=0.1.7",
+  "pydantic>=2.5.2",
+  "pydantic-settings>=2.2.1",
+  "python-dotenv>=1.0.1",
+  "rich>=13.7.1",
+  "fastapi>=0.115.0",
+  "uvicorn[standard]>=0.30.0",
+  "python-multipart>=0.0.6"
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.1.1",
+  "pytest-mock>=3.12.0",
+  "httpx>=0.27.0",      # for FastAPI testing
+  "pytest-asyncio>=0.23.5"
+]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+pythonpath = ["src"]

@@ -1,0 +1,117 @@
+Metadata-Version: 2.4
+Name: code-review-assistant
+Version: 0.2.0
+Summary: FastAPI service that ingests Git commit history and generates LangChain-powered LLM code reviews.
+Author-email: Max <max@example.com>
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: GitPython>=3.1.43
+Requires-Dist: langchain>=0.2.10
+Requires-Dist: langchain-openai>=0.1.7
+Requires-Dist: pydantic>=2.5.2
+Requires-Dist: pydantic-settings>=2.2.1
+Requires-Dist: python-dotenv>=1.0.1
+Requires-Dist: rich>=13.7.1
+Requires-Dist: fastapi>=0.115.0
+Requires-Dist: uvicorn[standard]>=0.30.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8.1.1; extra == "dev"
+Requires-Dist: pytest-mock>=3.12.0; extra == "dev"
+Requires-Dist: httpx>=0.27.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.23.5; extra == "dev"
+
+# LangChain Code Review Assistant
+
+A Python service that ingests Git commit history and routes changes through a LangChain-powered large language model to produce actionable review notes. The tool can be run as a CLI to review a range of commits locally, or integrated into CI pipelines to comment on pull requests.
+
+## Highlights
+
+- 🔍 Parse Git history with rich metadata and patch context.
+- 🧠 Compose configurable LangChain review chains that call your preferred LLM provider.
+- 🗂️ Modular design with clearly separated ingestion, review, and orchestration layers.
+- 🧪 Comes with a testable core so you can stub the LLM for fast unit tests.
+
+## Architecture Overview
+
+
+```text
+CLI (Typer/Rich)
+   │
+   ├── Services.ReviewService orchestrates workflow
+   │       ├── CommitIngest.GitRepository pulls commits & diffs via GitPython
+   │       └── Review.LangChainReviewAgent formats prompts & calls LLM through LangChain
+   │
+   └── Outputs markdown or Rich console summary per commit
+```
+
+### Deployment Options
+
+| Option | Description | When to choose |
+| --- | --- | --- |
+| Local CLI (default) | Run `python -m src.main` in your repo to review specific commit ranges. | You need fast manual reviews or want to validate before automating. |
+| CI Integration | Wrap CLI in a CI job and export markdown artifacts or PR comments. | You want automated gatekeeping with LLM suggestions. |
+| Service + Webhook | Wrap `ReviewService` in a FastAPI app that responds to Git webhooks. | Teams needing centralized review history or messaging integrations. |
+
+## Quickstart
+
+1. **Install** (from project root):
+
+   ```powershell
+   python -m venv .venv
+   .\\.venv\\Scripts\\Activate.ps1
+   pip install -e .[dev]
+   ```
+
+2. **Configure** environment variables (see `.env.sample`). At minimum set:
+   - `LLM_PROVIDER` (`openai` or `azure-openai`)
+   - Provider credentials (`OPENAI_API_KEY` or the Azure equivalents below)
+   - `REPO_PATH` (defaults to current working directory)
+
+3. **Run a review** (run inside the repo you want to inspect):
+
+   ```powershell
+   python -m src.main --from-ref HEAD~5 --to-ref HEAD --verbose
+   ```
+
+4. **Run tests**:
+
+   ```powershell
+   pytest
+   ```
+
+## Configuration
+
+Create a `.env` file or export environment variables:
+
+- `LLM_PROVIDER`: `openai` (default) or `azure-openai`.
+- `OPENAI_API_KEY`: API key for the OpenAI-compatible provider.
+- `OPENAI_MODEL`: Chat completion model ID (default: `gpt-4o-mini`).
+- `OPENAI_TEMPERATURE`: Sampling temperature (default: `0.1`).
+- `MAX_OUTPUT_TOKENS`: Cap on tokens returned by the LLM (default: `1200`).
+- `REPO_PATH`: Path to the Git repository under review (default: current directory).
+- `MAX_COMMITS`: Optional limit for commits processed per run.
+
+### Azure OpenAI
+
+Set `LLM_PROVIDER=azure-openai` and provide:
+
+- `AZURE_OPENAI_API_KEY`: Azure OpenAI API key.
+- `AZURE_OPENAI_ENDPOINT`: Fully qualified endpoint URL.
+- `AZURE_OPENAI_DEPLOYMENT`: Deployment name for your chat model.
+- `AZURE_OPENAI_API_VERSION`: Azure API version (default: `2024-06-01`).
+
+These values can live alongside the OpenAI settings, letting you swap providers by changing `LLM_PROVIDER`.
+
+## Roadmap
+
+- Support additional git providers via REST APIs.
+- Parallelize multi-file prompt generation with async chains.
+- Emit structured review comments suitable for GitHub/GitLab APIs.
+
+## Contributing
+
+1. Fork the project and create a topic branch.
+2. Ensure `pytest` passes and lint your code.
+3. Submit a pull request describing the change and impact.
+
+Enjoy building your AI reviewer! 🎉
