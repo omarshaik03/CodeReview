@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List
+from typing import List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.security.models import SecurityReport
 
 
 @dataclass(slots=True)
@@ -43,3 +46,4 @@ class ReviewReport:
     commit: RepoChange
     summary: str
     suggestions: List[ReviewSuggestion] = field(default_factory=list)
+    security_report: Optional[SecurityReport] = None

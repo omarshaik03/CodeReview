@@ -21,6 +21,7 @@ from src.commit_ingest import GitRepository
 from src.config import Settings, settings
 from src.review import LangChainReviewAgent
 from src.services import ReviewService
+from src.security import SecurityScanner
 
 logger = logging.getLogger(__name__)
 
@@ -90,11 +91,33 @@ class Finding(BaseModel):
     message: str
 
 
+class SecurityFindingResponse(BaseModel):
+    finding_type: str
+    severity: str
+    file_path: str
+    line_number: Optional[int] = None
+    title: str
+    description: str
+    cve_id: Optional[str] = None
+    recommendation: str
+
+
+class SecuritySummary(BaseModel):
+    risk_level: str
+    total_findings: int
+    critical_count: int
+    high_count: int
+    medium_count: int
+    low_count: int
+    findings: List[SecurityFindingResponse]
+
+
 class CommitReview(BaseModel):
     commit_hash: str
     commit_message: str
     summary: str
     findings: List[Finding]
+    security_summary: Optional[SecuritySummary] = None
 
 
 class ReviewResponse(BaseModel):
@@ -236,7 +259,7 @@ def _parse_reports_to_structured(reports: List[Any]) -> List[CommitReview]:
     Parse ReviewReport objects into structured CommitReview objects.
     """
     structured_reviews = []
-    
+
     for report in reports:
         # Parse suggestions into findings
         findings = []
@@ -246,14 +269,43 @@ def _parse_reports_to_structured(reports: List[Any]) -> List[CommitReview]:
                 file=suggestion.file_path,
                 message=suggestion.message
             ))
-        
+
+        # Parse security findings if present
+        security_summary = None
+        if report.security_report:
+            sec_report = report.security_report
+            security_findings = []
+
+            for sec_finding in sec_report.findings:
+                security_findings.append(SecurityFindingResponse(
+                    finding_type=sec_finding.finding_type.value,
+                    severity=sec_finding.severity.value,
+                    file_path=sec_finding.file_path,
+                    line_number=sec_finding.line_number,
+                    title=sec_finding.title,
+                    description=sec_finding.description,
+                    cve_id=sec_finding.cve_id,
+                    recommendation=sec_finding.recommendation,
+                ))
+
+            security_summary = SecuritySummary(
+                risk_level=sec_report.risk_level,
+                total_findings=len(sec_report.findings),
+                critical_count=sec_report.critical_count,
+                high_count=sec_report.high_count,
+                medium_count=sec_report.medium_count,
+                low_count=sec_report.low_count,
+                findings=security_findings,
+            )
+
         structured_reviews.append(CommitReview(
             commit_hash=report.commit.sha,
             commit_message=report.commit.summary,
             summary=report.summary,
-            findings=findings
+            findings=findings,
+            security_summary=security_summary,
         ))
-    
+
     return structured_reviews
 
 
@@ -266,6 +318,7 @@ async def root():
             "POST /review": "Submit a local repository path for review",
             "POST /review/upload": "Upload a .zip file of a repository for review",
             "POST /review/url": "Clone and review a repository from URL",
+            "POST /security/scan": "Run comprehensive security scan on entire repository",
             "GET /health": "Check API health"
         }
     }
@@ -274,6 +327,58 @@ async def root():
 @app.get("/health")
 async def health():
     return {"status": "healthy"}
+
+
+@app.post("/security/scan")
+async def scan_repository_security(request: ReviewRequest):
+    """
+    Run a comprehensive security scan on the entire repository.
+    Returns security findings without per-commit analysis.
+
+    This is useful for getting an overall security posture of the repository.
+    """
+    repo_path = Path(request.repo_path)
+
+    if not repo_path.exists():
+        raise HTTPException(
+            status_code=400,
+            detail=f"Repository path does not exist: {repo_path}"
+        )
+
+    try:
+        scanner = SecurityScanner(repo_path)
+        # Run full repo scan (no changed_files filter)
+        security_report = scanner.scan()
+
+        # Convert to response format
+        security_findings = []
+        for finding in security_report.findings:
+            security_findings.append(SecurityFindingResponse(
+                finding_type=finding.finding_type.value,
+                severity=finding.severity.value,
+                file_path=finding.file_path,
+                line_number=finding.line_number,
+                title=finding.title,
+                description=finding.description,
+                cve_id=finding.cve_id,
+                recommendation=finding.recommendation,
+            ))
+
+        return SecuritySummary(
+            risk_level=security_report.risk_level,
+            total_findings=len(security_report.findings),
+            critical_count=security_report.critical_count,
+            high_count=security_report.high_count,
+            medium_count=security_report.medium_count,
+            low_count=security_report.low_count,
+            findings=security_findings,
+        )
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Security scan failed: {str(exc)}"
+        )
 
 
 @app.post("/review")

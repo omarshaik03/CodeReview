@@ -39,19 +39,20 @@ class ReviewService:
     ) -> List[ReviewReport]:
         """
         Review commits in the repository.
-        
+
         Args:
             start_ref: Starting reference (exclusive). If None, walks back from end_ref.
             end_ref: Ending reference (inclusive).
             max_commits: Maximum number of commits to review.
             custom_guidelines: Optional custom review guidelines to apply.
-        
+
         Returns:
             List of ReviewReport objects.
         """
         query = CommitQuery(start_ref=start_ref, end_ref=end_ref, max_count=max_commits)
         changes = self._repository.get_commits(query)
-        return [self._agent.review(change, custom_guidelines=custom_guidelines) for change in changes]
+        repo_path = self._repository.repo_path if hasattr(self._repository, 'repo_path') else None
+        return [self._agent.review(change, custom_guidelines=custom_guidelines, repo_path=repo_path) for change in changes]
 
     def review_from_config(self, config: ReviewServiceConfig) -> List[ReviewReport]:
         return self.review(
@@ -71,19 +72,20 @@ class ReviewService:
     ) -> Iterable[ReviewReport]:
         """
         Iterate through reviews of commits in the repository.
-        
+
         Args:
             start_ref: Starting reference (exclusive). If None, walks back from end_ref.
             end_ref: Ending reference (inclusive).
             max_commits: Maximum number of commits to review.
             custom_guidelines: Optional custom review guidelines to apply.
-        
+
         Yields:
             ReviewReport objects.
         """
         query = CommitQuery(start_ref=start_ref, end_ref=end_ref, max_count=max_commits)
+        repo_path = self._repository.repo_path if hasattr(self._repository, 'repo_path') else None
         for change in self._repository.iter_commits(query):
-            yield self._agent.review(change, custom_guidelines=custom_guidelines)
+            yield self._agent.review(change, custom_guidelines=custom_guidelines, repo_path=repo_path)
 
     @staticmethod
     def render_console_summary(reports: Iterable[ReviewReport], *, console: Optional[Console] = None) -> None:

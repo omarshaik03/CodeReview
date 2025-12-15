@@ -14,6 +14,9 @@ src/models/__init__.py
 src/models/change.py
 src/review/__init__.py
 src/review/review_agent.py
+src/security/__init__.py
+src/security/models.py
+src/security/scanner.py
 src/services/__init__.py
 src/services/review_service.py
 tests/test_main_llm.py

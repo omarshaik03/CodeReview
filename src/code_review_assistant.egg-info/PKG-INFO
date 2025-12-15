@@ -14,11 +14,19 @@ Requires-Dist: python-dotenv>=1.0.1
 Requires-Dist: rich>=13.7.1
 Requires-Dist: fastapi>=0.115.0
 Requires-Dist: uvicorn[standard]>=0.30.0
+Requires-Dist: python-multipart>=0.0.6
 Provides-Extra: dev
 Requires-Dist: pytest>=8.1.1; extra == "dev"
 Requires-Dist: pytest-mock>=3.12.0; extra == "dev"
 Requires-Dist: httpx>=0.27.0; extra == "dev"
 Requires-Dist: pytest-asyncio>=0.23.5; extra == "dev"
+Provides-Extra: security
+Requires-Dist: bandit>=1.7.5; extra == "security"
+Requires-Dist: pip-audit>=2.6.1; extra == "security"
+Requires-Dist: safety>=2.3.5; extra == "security"
+Provides-Extra: docs
+Requires-Dist: PyPDF2>=3.0.0; extra == "docs"
+Requires-Dist: python-docx>=1.1.0; extra == "docs"
 
 # LangChain Code Review Assistant
 
