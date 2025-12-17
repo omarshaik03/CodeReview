@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Iterator, List, Optional
 
@@ -18,6 +19,8 @@ class CommitQuery:
     start_ref: Optional[str] = None
     end_ref: str = "HEAD"
     max_count: Optional[int] = None
+    since: Optional[datetime] = None  # Start date (inclusive)
+    until: Optional[datetime] = None  # End date (inclusive)
 
 
 class GitRepository:
@@ -38,17 +41,55 @@ class GitRepository:
 
     def get_commits(self, query: CommitQuery) -> List[RepoChange]:
         """
-        Resolve commits between two refs (inclusive of the end ref) and return
+        Resolve commits between two refs or date ranges and return
         structured change objects ordered from oldest to newest.
-        """
 
-        rev_range = self._build_rev_range(query)
-        commits = list(
-            self._repo.iter_commits(
-                rev_range,
-                max_count=query.max_count,
-            )
-        )
+        Supports either:
+        - Ref-based filtering (start_ref, end_ref) - both inclusive
+        - Date-based filtering (since, until) - both inclusive
+        But not both simultaneously.
+        """
+        # Build arguments for iter_commits
+        iter_kwargs = {}
+
+        if query.since or query.until:
+            # Date-based filtering
+            rev = query.end_ref if query.end_ref != "HEAD" else "HEAD"
+            if query.since:
+                iter_kwargs['since'] = query.since
+            if query.until:
+                # Make until date inclusive by extending to end of day if no time specified
+                until_date = query.until
+                # Check if time is midnight (00:00:00), indicating date-only input
+                if until_date.hour == 0 and until_date.minute == 0 and until_date.second == 0:
+                    # Extend to end of day to include all commits from that date
+                    until_date = until_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+                iter_kwargs['until'] = until_date
+            if query.max_count:
+                iter_kwargs['max_count'] = query.max_count
+
+            commits = list(self._repo.iter_commits(rev, **iter_kwargs))
+        else:
+            # Ref-based filtering - get all commits up to end_ref, then filter by start_ref
+            if query.max_count:
+                iter_kwargs['max_count'] = query.max_count
+
+            commits = list(self._repo.iter_commits(query.end_ref, **iter_kwargs))
+
+            # If start_ref is provided, filter to only include commits from start_ref to end_ref (inclusive)
+            if query.start_ref:
+                start_commit_sha = self._repo.commit(query.start_ref).hexsha
+
+                # iter_commits returns newest-to-oldest, so we collect commits until we find start_ref
+                filtered_commits = []
+                for commit in commits:
+                    filtered_commits.append(commit)
+                    if commit.hexsha == start_commit_sha:
+                        # Found the start commit, stop here
+                        break
+
+                commits = filtered_commits
+
         commits.reverse()  # oldest first for conversational flow
         return [self._map_commit(commit) for commit in commits]
 

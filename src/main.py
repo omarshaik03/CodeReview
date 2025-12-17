@@ -6,13 +6,14 @@ import tempfile
 import zipfile
 import subprocess
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, List
 from io import StringIO
 
 from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
 from rich.console import Console
 
 from langchain_openai import AzureChatOpenAI, ChatOpenAI
@@ -43,45 +44,120 @@ app.add_middleware(
 
 class ReviewRequest(BaseModel):
     repo_path: str = Field(..., description="Path to the Git repository")
-    from_ref: Optional[str] = Field(None, description="Oldest commit (exclusive)")
-    to_ref: str = Field("HEAD", description="Newest commit (inclusive)")
+
+    # Commit reference filtering (mutually exclusive with date filtering)
+    from_ref: Optional[str] = Field(None, description="Oldest commit (inclusive) - cannot be used with date filters")
+    to_ref: str = Field("HEAD", description="Newest commit (inclusive) - cannot be used with date filters")
+
+    # Date-based filtering (mutually exclusive with commit reference filtering)
+    since: Optional[datetime] = Field(None, description="Start date (inclusive) - cannot be used with from_ref/to_ref. Format: YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS")
+    until: Optional[datetime] = Field(None, description="End date (inclusive) - cannot be used with from_ref/to_ref. Format: YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS")
+
     max_commits: Optional[int] = Field(None, ge=1, description="Limit number of commits")
     format: str = Field("json", description="Output format: 'json' or 'text'")
     review_guidelines: Optional[str] = Field(None, description="Custom review guidelines text")
-    
+
+    @model_validator(mode='after')
+    def validate_filtering_mode(self):
+        """Ensure either commit refs OR dates are used, not both."""
+        using_refs = self.from_ref is not None or (self.to_ref != "HEAD" and self.to_ref is not None)
+        using_dates = self.since is not None or self.until is not None
+
+        if using_refs and using_dates:
+            raise ValueError(
+                "Cannot use both commit references (from_ref/to_ref) and date filters (since/until). "
+                "Please use either commit references OR date ranges, not both."
+            )
+
+        return self
+
     class Config:
         json_schema_extra = {
-            "example": {
-                "repo_path": "/path/to/repo",
-                "from_ref": "HEAD~2",
-                "to_ref": "HEAD",
-                "max_commits": 10,
-                "format": "json",
-                "review_guidelines": "Focus on security and performance issues."
-            }
+            "examples": [
+                {
+                    "description": "Review using commit references",
+                    "value": {
+                        "repo_path": "/path/to/repo",
+                        "from_ref": "HEAD~2",
+                        "to_ref": "HEAD",
+                        "max_commits": 10,
+                        "format": "json",
+                        "review_guidelines": "Focus on security and performance issues."
+                    }
+                },
+                {
+                    "description": "Review using date range",
+                    "value": {
+                        "repo_path": "/path/to/repo",
+                        "since": "2024-01-01T00:00:00",
+                        "until": "2024-12-31T23:59:59",
+                        "max_commits": 10,
+                        "format": "json",
+                        "review_guidelines": "Focus on security and performance issues."
+                    }
+                }
+            ]
         }
 
 
 class RepoUrlRequest(BaseModel):
     repo_url: HttpUrl = Field(..., description="Git repository URL (e.g., https://github.com/user/repo.git)")
-    from_ref: Optional[str] = Field(None, description="Oldest commit (exclusive)")
-    to_ref: str = Field("HEAD", description="Newest commit (inclusive)")
+
+    # Commit reference filtering (mutually exclusive with date filtering)
+    from_ref: Optional[str] = Field(None, description="Oldest commit (inclusive) - cannot be used with date filters")
+    to_ref: str = Field("HEAD", description="Newest commit (inclusive) - cannot be used with date filters")
+
+    # Date-based filtering (mutually exclusive with commit reference filtering)
+    since: Optional[datetime] = Field(None, description="Start date (inclusive) - cannot be used with from_ref/to_ref. Format: YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS")
+    until: Optional[datetime] = Field(None, description="End date (inclusive) - cannot be used with from_ref/to_ref. Format: YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS")
+
     max_commits: Optional[int] = Field(None, ge=1, description="Limit number of commits")
     format: str = Field("json", description="Output format: 'json' or 'text'")
     branch: Optional[str] = Field(None, description="Specific branch to clone (optional)")
     review_guidelines: Optional[str] = Field(None, description="Custom review guidelines text")
-    
+
+    @model_validator(mode='after')
+    def validate_filtering_mode(self):
+        """Ensure either commit refs OR dates are used, not both."""
+        using_refs = self.from_ref is not None or (self.to_ref != "HEAD" and self.to_ref is not None)
+        using_dates = self.since is not None or self.until is not None
+
+        if using_refs and using_dates:
+            raise ValueError(
+                "Cannot use both commit references (from_ref/to_ref) and date filters (since/until). "
+                "Please use either commit references OR date ranges, not both."
+            )
+
+        return self
+
     class Config:
         json_schema_extra = {
-            "example": {
-                "repo_url": "https://github.com/username/repository.git",
-                "from_ref": "HEAD~5",
-                "to_ref": "HEAD",
-                "max_commits": 10,
-                "format": "json",
-                "branch": "main",
-                "review_guidelines": "Focus on security and performance issues."
-            }
+            "examples": [
+                {
+                    "description": "Review using commit references",
+                    "value": {
+                        "repo_url": "https://github.com/username/repository.git",
+                        "from_ref": "HEAD~5",
+                        "to_ref": "HEAD",
+                        "max_commits": 10,
+                        "format": "json",
+                        "branch": "main",
+                        "review_guidelines": "Focus on security and performance issues."
+                    }
+                },
+                {
+                    "description": "Review using date range",
+                    "value": {
+                        "repo_url": "https://github.com/username/repository.git",
+                        "since": "2024-01-01",
+                        "until": "2024-12-31",
+                        "max_commits": 10,
+                        "format": "json",
+                        "branch": "main",
+                        "review_guidelines": "Focus on security and performance issues."
+                    }
+                }
+            ]
         }
 
 
@@ -411,11 +487,13 @@ async def review_commits(request: ReviewRequest):
         )
 
     try:
-        # Pass review guidelines to the service
+        # Pass review guidelines and date filters to the service
         reports = service.review(
             start_ref=cfg.start_ref,
             end_ref=cfg.end_ref,
             max_commits=cfg.max_commits,
+            since=request.since,
+            until=request.until,
             custom_guidelines=request.review_guidelines,
         )
         
@@ -451,18 +529,23 @@ async def review_commits(request: ReviewRequest):
 @app.get("/review")
 async def review_commits_get(
     repo_path: str = Query(..., description="Path to the Git repository"),
-    from_ref: Optional[str] = Query(None, description="Oldest commit (exclusive)"),
-    to_ref: str = Query("HEAD", description="Newest commit (inclusive)"),
+    from_ref: Optional[str] = Query(None, description="Oldest commit (inclusive) - cannot be used with date filters"),
+    to_ref: str = Query("HEAD", description="Newest commit (inclusive) - cannot be used with date filters"),
+    since: Optional[datetime] = Query(None, description="Start date (inclusive) - cannot be used with from_ref/to_ref"),
+    until: Optional[datetime] = Query(None, description="End date (inclusive) - cannot be used with from_ref/to_ref"),
     max_commits: Optional[int] = Query(None, ge=1, description="Limit number of commits"),
     format: str = Query("json", description="Output format: 'json' or 'text'"),
 ):
     """
     GET endpoint for reviewing commits (alternative to POST).
+    Supports both commit reference filtering and date-based filtering (mutually exclusive).
     """
     request = ReviewRequest(
         repo_path=repo_path,
         from_ref=from_ref,
         to_ref=to_ref,
+        since=since,
+        until=until,
         max_commits=max_commits,
         format=format,
     )
@@ -473,8 +556,10 @@ async def review_commits_get(
 async def review_zip_upload(
     file: UploadFile = File(..., description="Zip file containing the repository"),
     guidelines_file: Optional[UploadFile] = File(None, description="Optional PDF/DOCX with review guidelines"),
-    from_ref: Optional[str] = Form(None, description="Oldest commit (exclusive)"),
-    to_ref: str = Form("HEAD", description="Newest commit (inclusive)"),
+    from_ref: Optional[str] = Form(None, description="Oldest commit (inclusive) - cannot be used with date filters"),
+    to_ref: str = Form("HEAD", description="Newest commit (inclusive) - cannot be used with date filters"),
+    since: Optional[datetime] = Form(None, description="Start date (inclusive) - cannot be used with from_ref/to_ref"),
+    until: Optional[datetime] = Form(None, description="End date (inclusive) - cannot be used with from_ref/to_ref"),
     max_commits: Optional[int] = Form(None, description="Limit number of commits"),
     format: str = Form("json", description="Output format: 'json' or 'text'"),
 ):
@@ -530,6 +615,8 @@ async def review_zip_upload(
             repo_path=str(git_dir),
             from_ref=from_ref,
             to_ref=to_ref,
+            since=since,
+            until=until,
             max_commits=max_commits,
             format=format,
             review_guidelines=review_guidelines,
@@ -561,8 +648,10 @@ async def review_zip_upload(
 async def review_from_url(
     repo_url: str = Form(..., description="Git repository URL"),
     guidelines_file: Optional[UploadFile] = File(None, description="Optional PDF/DOCX with review guidelines"),
-    from_ref: Optional[str] = Form(None, description="Oldest commit (exclusive)"),
-    to_ref: str = Form("HEAD", description="Newest commit (inclusive)"),
+    from_ref: Optional[str] = Form(None, description="Oldest commit (inclusive) - cannot be used with date filters"),
+    to_ref: str = Form("HEAD", description="Newest commit (inclusive) - cannot be used with date filters"),
+    since: Optional[datetime] = Form(None, description="Start date (inclusive) - cannot be used with from_ref/to_ref"),
+    until: Optional[datetime] = Form(None, description="End date (inclusive) - cannot be used with from_ref/to_ref"),
     max_commits: Optional[int] = Form(None, description="Limit number of commits"),
     format: str = Form("json", description="Output format: 'json' or 'text'"),
     branch: Optional[str] = Form(None, description="Specific branch to clone"),
@@ -612,6 +701,8 @@ async def review_from_url(
             repo_path=str(clone_path),
             from_ref=from_ref,
             to_ref=to_ref,
+            since=since,
+            until=until,
             max_commits=max_commits,
             format=format,
             review_guidelines=review_guidelines,

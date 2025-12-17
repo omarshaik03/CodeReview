@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Iterable, List, Optional
 
@@ -32,24 +33,34 @@ class ReviewService:
     def review(
         self,
         *,
-        start_ref: Optional[str],
-        end_ref: str,
-        max_commits: Optional[int],
+        start_ref: Optional[str] = None,
+        end_ref: str = "HEAD",
+        max_commits: Optional[int] = None,
+        since: Optional[datetime] = None,
+        until: Optional[datetime] = None,
         custom_guidelines: Optional[str] = None,
     ) -> List[ReviewReport]:
         """
         Review commits in the repository.
 
         Args:
-            start_ref: Starting reference (exclusive). If None, walks back from end_ref.
+            start_ref: Starting reference (inclusive). If None, walks back from end_ref.
             end_ref: Ending reference (inclusive).
             max_commits: Maximum number of commits to review.
+            since: Start date for date-based filtering (inclusive).
+            until: End date for date-based filtering (inclusive).
             custom_guidelines: Optional custom review guidelines to apply.
 
         Returns:
             List of ReviewReport objects.
         """
-        query = CommitQuery(start_ref=start_ref, end_ref=end_ref, max_count=max_commits)
+        query = CommitQuery(
+            start_ref=start_ref,
+            end_ref=end_ref,
+            max_count=max_commits,
+            since=since,
+            until=until
+        )
         changes = self._repository.get_commits(query)
         repo_path = self._repository.repo_path if hasattr(self._repository, 'repo_path') else None
         return [self._agent.review(change, custom_guidelines=custom_guidelines, repo_path=repo_path) for change in changes]
@@ -65,24 +76,34 @@ class ReviewService:
     def iter_review(
         self,
         *,
-        start_ref: Optional[str],
-        end_ref: str,
-        max_commits: Optional[int],
+        start_ref: Optional[str] = None,
+        end_ref: str = "HEAD",
+        max_commits: Optional[int] = None,
+        since: Optional[datetime] = None,
+        until: Optional[datetime] = None,
         custom_guidelines: Optional[str] = None,
     ) -> Iterable[ReviewReport]:
         """
         Iterate through reviews of commits in the repository.
 
         Args:
-            start_ref: Starting reference (exclusive). If None, walks back from end_ref.
+            start_ref: Starting reference (inclusive). If None, walks back from end_ref.
             end_ref: Ending reference (inclusive).
             max_commits: Maximum number of commits to review.
+            since: Start date for date-based filtering (inclusive).
+            until: End date for date-based filtering (inclusive).
             custom_guidelines: Optional custom review guidelines to apply.
 
         Yields:
             ReviewReport objects.
         """
-        query = CommitQuery(start_ref=start_ref, end_ref=end_ref, max_count=max_commits)
+        query = CommitQuery(
+            start_ref=start_ref,
+            end_ref=end_ref,
+            max_count=max_commits,
+            since=since,
+            until=until
+        )
         repo_path = self._repository.repo_path if hasattr(self._repository, 'repo_path') else None
         for change in self._repository.iter_commits(query):
             yield self._agent.review(change, custom_guidelines=custom_guidelines, repo_path=repo_path)
