@@ -37,6 +37,8 @@ class SecurityFinding:
     description: str = ""
     cve_id: Optional[str] = None
     recommendation: str = ""
+    solution: Optional[str] = None
+    original_code: Optional[str] = None
     raw_data: Optional[dict] = None
 
 

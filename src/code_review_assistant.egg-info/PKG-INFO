@@ -68,7 +68,6 @@ CLI (Typer/Rich)
    python -m venv .venv
    .\\.venv\\Scripts\\Activate.ps1
    pip install -e .[dev]
-   pip install -e .[security]
    ```
 
 2. **Configure** environment variables (see `.env.sample`). At minimum set:

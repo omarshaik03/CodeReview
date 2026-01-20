@@ -37,6 +37,8 @@ class ReviewSuggestion:
     file_path: str
     message: str
     severity: str = "info"
+    solution: Optional[str] = None
+    original_code: Optional[str] = None
 
 
 @dataclass(slots=True)

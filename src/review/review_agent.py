@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import List, Literal, Optional
@@ -8,6 +9,7 @@ from typing import List, Literal, Optional
 from langchain_core.output_parsers import PydanticOutputParser  # type: ignore[import]
 from langchain_core.prompts import ChatPromptTemplate  # type: ignore[import]
 from langchain_openai import ChatOpenAI  # type: ignore[import]
+from openai import RateLimitError  # type: ignore[import]
 from pydantic import BaseModel, Field  # type: ignore[import]
 
 from src.models import RepoChange, ReviewReport, ReviewSuggestion
@@ -29,6 +31,8 @@ class _ReviewSuggestionModel(BaseModel):
     file_path: str = Field(..., description="File path relative to repo root")
     message: str = Field(..., description="Concise review feedback")
     severity: Literal["info", "nit", "warn", "critical"] = "info"
+    solution: Optional[str] = Field(None, description="Suggested code solution or fix for the issue")
+    original_code: Optional[str] = Field(None, description="Original problematic code snippet")
 
 
 class _ReviewModel(BaseModel):
@@ -48,15 +52,25 @@ class LangChainReviewAgent(BaseReviewAgent):
         llm: Optional[ChatOpenAI] = None,
         enable_json_mode: bool = False,
         enable_security_scan: bool = True,
+        max_retries: int = 3,
+        initial_retry_delay: float = 2.0,
+        max_retry_delay: float = 30.0,
     ) -> None:
         self._parser = PydanticOutputParser(pydantic_object=_ReviewModel)
         self._enable_security_scan = enable_security_scan
+        self._max_retries = max_retries
+        self._initial_retry_delay = initial_retry_delay
+        self._max_retry_delay = max_retry_delay
         
         # Base prompt template (will be modified with custom guidelines and security findings if provided)
         self._base_system_prompt = (
             "You are a senior software engineer performing code review."
             " Provide concise, actionable feedback without being overly verbose."
             " Focus on correctness, security, performance, testing, and readability."
+            " For each finding, provide both 'original_code' and 'solution' fields:"
+            " - 'original_code': The exact problematic code snippet (1-3 lines)"
+            " - 'solution': The corrected/improved version of that code"
+            " This allows users to see a before/after comparison."
             " Respond using the JSON schema provided in the instructions."
         )
 
@@ -145,18 +159,8 @@ class LangChainReviewAgent(BaseReviewAgent):
             "format_instructions": self._parser.get_format_instructions(),
         }
 
-        parsed: _ReviewModel
-        if self._json_chain is not None:
-            try:
-                parsed = self._json_chain.invoke(payload)
-            except Exception as exc:  # pragma: no cover - runtime fallback
-                logger.warning(
-                    "Structured chain invocation failed. Falling back to parser pipeline.",
-                    exc_info=exc,
-                )
-                parsed = self._fallback_chain.invoke(payload)
-        else:
-            parsed = self._fallback_chain.invoke(payload)
+        # Invoke LLM with exponential backoff for rate limit errors
+        parsed: _ReviewModel = self._invoke_with_retry(payload)
 
         return ReviewReport(
             commit=change,
@@ -166,11 +170,58 @@ class LangChainReviewAgent(BaseReviewAgent):
                     file_path=item.file_path,
                     message=item.message,
                     severity=item.severity,
+                    solution=item.solution,
+                    original_code=item.original_code,
                 )
                 for item in parsed.suggestions
             ],
             security_report=security_report,
         )
+
+    def _invoke_with_retry(self, payload: dict) -> _ReviewModel:
+        """Invoke LLM with exponential backoff retry logic for rate limit errors."""
+        retry_delay = self._initial_retry_delay
+        last_exception = None
+
+        for attempt in range(self._max_retries):
+            try:
+                if self._json_chain is not None:
+                    try:
+                        return self._json_chain.invoke(payload)
+                    except Exception as exc:
+                        # If structured mode fails for non-rate-limit reasons, fall back to parser
+                        if not isinstance(exc, RateLimitError):
+                            logger.warning(
+                                "Structured chain invocation failed. Falling back to parser pipeline.",
+                                exc_info=exc,
+                            )
+                            return self._fallback_chain.invoke(payload)
+                        raise  # Re-raise rate limit errors to retry
+                else:
+                    return self._fallback_chain.invoke(payload)
+
+            except RateLimitError as exc:
+                last_exception = exc
+                if attempt < self._max_retries - 1:
+                    logger.warning(
+                        f"Rate limit error on attempt {attempt + 1}/{self._max_retries}. "
+                        f"Retrying in {retry_delay:.1f} seconds..."
+                    )
+                    time.sleep(retry_delay)
+                    # Exponential backoff with cap
+                    retry_delay = min(retry_delay * 2, self._max_retry_delay)
+                else:
+                    logger.error(f"Rate limit error after {self._max_retries} attempts. Giving up.")
+                    raise
+            except Exception as exc:
+                # For non-rate-limit errors, don't retry
+                logger.error(f"LLM invocation failed with non-retriable error: {exc}")
+                raise
+
+        # Should never reach here, but just in case
+        if last_exception:
+            raise last_exception
+        raise RuntimeError("Unexpected retry loop exit")
 
     def _render_diffs(self, file_changes) -> str:
         sections = []
