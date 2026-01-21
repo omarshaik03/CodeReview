@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -11,6 +13,9 @@ from rich.table import Table  # type: ignore[import]
 from src.commit_ingest import CommitQuery, GitRepository
 from src.models import RepoChange, ReviewReport
 from src.review import BaseReviewAgent
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -26,9 +31,15 @@ class ReviewServiceConfig:
 class ReviewService:
     """Coordinates fetching commits and sending them through the review agent."""
 
-    def __init__(self, repository: GitRepository, agent: BaseReviewAgent) -> None:
+    def __init__(
+        self,
+        repository: GitRepository,
+        agent: BaseReviewAgent,
+        inter_commit_delay: float = 0.3,
+    ) -> None:
         self._repository = repository
         self._agent = agent
+        self._inter_commit_delay = inter_commit_delay
 
     def review(
         self,
@@ -63,7 +74,23 @@ class ReviewService:
         )
         changes = self._repository.get_commits(query)
         repo_path = self._repository.repo_path if hasattr(self._repository, 'repo_path') else None
-        return [self._agent.review(change, custom_guidelines=custom_guidelines, repo_path=repo_path) for change in changes]
+
+        # Process commits with small delays between each to spread token usage
+        reviews = []
+        for idx, change in enumerate(changes, start=1):
+            try:
+                review = self._agent.review(change, custom_guidelines=custom_guidelines, repo_path=repo_path)
+                reviews.append(review)
+
+                # Add small delay between commits (except the last one) to spread token usage
+                if idx < len(changes):
+                    time.sleep(self._inter_commit_delay)
+            except Exception as exc:
+                logger.error(f"Failed to review commit {change.sha[:8]}: {exc}")
+                # Continue with other commits even if one fails
+                continue
+
+        return reviews
 
     def review_from_config(self, config: ReviewServiceConfig) -> List[ReviewReport]:
         return self.review(
@@ -105,8 +132,18 @@ class ReviewService:
             until=until
         )
         repo_path = self._repository.repo_path if hasattr(self._repository, 'repo_path') else None
+
         for change in self._repository.iter_commits(query):
-            yield self._agent.review(change, custom_guidelines=custom_guidelines, repo_path=repo_path)
+            try:
+                review = self._agent.review(change, custom_guidelines=custom_guidelines, repo_path=repo_path)
+                yield review
+
+                # Add small delay between commits to spread token usage
+                time.sleep(self._inter_commit_delay)
+            except Exception as exc:
+                logger.error(f"Failed to review commit {change.sha[:8]}: {exc}")
+                # Continue with other commits even if one fails
+                continue
 
     @staticmethod
     def render_console_summary(reports: Iterable[ReviewReport], *, console: Optional[Console] = None) -> None:

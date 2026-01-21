@@ -32,10 +32,18 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# Configure CORS
+# Configure CORS - use environment variable for allowed origins
+# Set CORS_ORIGINS env var to comma-separated list of allowed origins
+# Example: CORS_ORIGINS=https://your-frontend.azurewebsites.net,http://localhost:5173
+cors_origins_str = os.getenv("CORS_ORIGINS", "*")
+if cors_origins_str == "*":
+    cors_origins = ["*"]
+else:
+    cors_origins = [origin.strip() for origin in cors_origins_str.split(",")]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, replace with specific origins like ["http://localhost:5173"]
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -165,6 +173,8 @@ class Finding(BaseModel):
     severity: str
     file: str
     message: str
+    solution: Optional[str] = None
+    original_code: Optional[str] = None
 
 
 class SecurityFindingResponse(BaseModel):
@@ -176,6 +186,8 @@ class SecurityFindingResponse(BaseModel):
     description: str
     cve_id: Optional[str] = None
     recommendation: str
+    solution: Optional[str] = None
+    original_code: Optional[str] = None
 
 
 class SecuritySummary(BaseModel):
@@ -343,7 +355,9 @@ def _parse_reports_to_structured(reports: List[Any]) -> List[CommitReview]:
             findings.append(Finding(
                 severity=suggestion.severity,
                 file=suggestion.file_path,
-                message=suggestion.message
+                message=suggestion.message,
+                solution=suggestion.solution,
+                original_code=suggestion.original_code
             ))
 
         # Parse security findings if present
@@ -362,6 +376,8 @@ def _parse_reports_to_structured(reports: List[Any]) -> List[CommitReview]:
                     description=sec_finding.description,
                     cve_id=sec_finding.cve_id,
                     recommendation=sec_finding.recommendation,
+                    solution=sec_finding.solution,
+                    original_code=sec_finding.original_code,
                 ))
 
             security_summary = SecuritySummary(
@@ -438,6 +454,8 @@ async def scan_repository_security(request: ReviewRequest):
                 description=finding.description,
                 cve_id=finding.cve_id,
                 recommendation=finding.recommendation,
+                solution=finding.solution,
+                original_code=finding.original_code,
             ))
 
         return SecuritySummary(
