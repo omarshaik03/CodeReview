@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import os
 import shutil
 import tempfile
@@ -13,6 +15,7 @@ from io import StringIO
 
 from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
 from rich.console import Console
 
@@ -576,8 +579,8 @@ async def review_zip_upload(
     guidelines_file: Optional[UploadFile] = File(None, description="Optional PDF/DOCX with review guidelines"),
     from_ref: Optional[str] = Form(None, description="Oldest commit (inclusive) - cannot be used with date filters"),
     to_ref: str = Form("HEAD", description="Newest commit (inclusive) - cannot be used with date filters"),
-    since: Optional[datetime] = Form(None, description="Start date (inclusive) - cannot be used with from_ref/to_ref"),
-    until: Optional[datetime] = Form(None, description="End date (inclusive) - cannot be used with from_ref/to_ref"),
+    since: Optional[str] = Form(None, description="Start date (inclusive) - cannot be used with from_ref/to_ref"),
+    until: Optional[str] = Form(None, description="End date (inclusive) - cannot be used with from_ref/to_ref"),
     max_commits: Optional[int] = Form(None, description="Limit number of commits"),
     format: str = Form("json", description="Output format: 'json' or 'text'"),
 ):
@@ -591,7 +594,25 @@ async def review_zip_upload(
             status_code=400,
             detail="File must be a .zip archive"
         )
-    
+
+    # Parse date strings to datetime objects
+    since_dt: Optional[datetime] = None
+    until_dt: Optional[datetime] = None
+
+    if since:
+        try:
+            since_dt = datetime.fromisoformat(since.replace('Z', '+00:00'))
+        except ValueError:
+            # Try parsing as date only (YYYY-MM-DD)
+            since_dt = datetime.strptime(since, "%Y-%m-%d")
+
+    if until:
+        try:
+            until_dt = datetime.fromisoformat(until.replace('Z', '+00:00'))
+        except ValueError:
+            # Try parsing as date only (YYYY-MM-DD)
+            until_dt = datetime.strptime(until, "%Y-%m-%d")
+
     # Extract guidelines if provided
     review_guidelines = None
     if guidelines_file:
@@ -633,8 +654,8 @@ async def review_zip_upload(
             repo_path=str(git_dir),
             from_ref=from_ref,
             to_ref=to_ref,
-            since=since,
-            until=until,
+            since=since_dt,
+            until=until_dt,
             max_commits=max_commits,
             format=format,
             review_guidelines=review_guidelines,
@@ -668,8 +689,8 @@ async def review_from_url(
     guidelines_file: Optional[UploadFile] = File(None, description="Optional PDF/DOCX with review guidelines"),
     from_ref: Optional[str] = Form(None, description="Oldest commit (inclusive) - cannot be used with date filters"),
     to_ref: str = Form("HEAD", description="Newest commit (inclusive) - cannot be used with date filters"),
-    since: Optional[datetime] = Form(None, description="Start date (inclusive) - cannot be used with from_ref/to_ref"),
-    until: Optional[datetime] = Form(None, description="End date (inclusive) - cannot be used with from_ref/to_ref"),
+    since: Optional[str] = Form(None, description="Start date (inclusive) - cannot be used with from_ref/to_ref"),
+    until: Optional[str] = Form(None, description="End date (inclusive) - cannot be used with from_ref/to_ref"),
     max_commits: Optional[int] = Form(None, description="Limit number of commits"),
     format: str = Form("json", description="Output format: 'json' or 'text'"),
     branch: Optional[str] = Form(None, description="Specific branch to clone"),
@@ -679,6 +700,24 @@ async def review_from_url(
     Optionally upload a guidelines document (PDF, DOCX, or TXT) to guide the review.
     Supports GitHub, GitLab, Bitbucket, and any Git-compatible URL.
     """
+    # Parse date strings to datetime objects
+    since_dt: Optional[datetime] = None
+    until_dt: Optional[datetime] = None
+
+    if since:
+        try:
+            since_dt = datetime.fromisoformat(since.replace('Z', '+00:00'))
+        except ValueError:
+            # Try parsing as date only (YYYY-MM-DD)
+            since_dt = datetime.strptime(since, "%Y-%m-%d")
+
+    if until:
+        try:
+            until_dt = datetime.fromisoformat(until.replace('Z', '+00:00'))
+        except ValueError:
+            # Try parsing as date only (YYYY-MM-DD)
+            until_dt = datetime.strptime(until, "%Y-%m-%d")
+
     # Extract guidelines if provided
     review_guidelines = None
     if guidelines_file:
@@ -719,8 +758,8 @@ async def review_from_url(
             repo_path=str(clone_path),
             from_ref=from_ref,
             to_ref=to_ref,
-            since=since,
-            until=until,
+            since=since_dt,
+            until=until_dt,
             max_commits=max_commits,
             format=format,
             review_guidelines=review_guidelines,
@@ -746,6 +785,203 @@ async def review_from_url(
                 shutil.rmtree(temp_dir)
             except Exception as cleanup_exc:
                 logger.warning(f"Failed to cleanup temp directory: {cleanup_exc}")
+
+
+@app.post("/review/url/stream")
+async def review_from_url_stream(
+    repo_url: str = Form(..., description="Git repository URL"),
+    guidelines_file: Optional[UploadFile] = File(None, description="Optional PDF/DOCX with review guidelines"),
+    from_ref: Optional[str] = Form(None, description="Oldest commit (inclusive) - cannot be used with date filters"),
+    to_ref: str = Form("HEAD", description="Newest commit (inclusive) - cannot be used with date filters"),
+    since: Optional[str] = Form(None, description="Start date (inclusive) - cannot be used with from_ref/to_ref"),
+    until: Optional[str] = Form(None, description="End date (inclusive) - cannot be used with from_ref/to_ref"),
+    max_commits: Optional[int] = Form(None, description="Limit number of commits"),
+    branch: Optional[str] = Form(None, description="Specific branch to clone"),
+):
+    """
+    Clone a Git repository and review it with streaming progress updates.
+    Returns Server-Sent Events (SSE) with progress and results.
+    """
+    # Parse date strings to datetime objects
+    since_dt: Optional[datetime] = None
+    until_dt: Optional[datetime] = None
+
+    if since:
+        try:
+            since_dt = datetime.fromisoformat(since.replace('Z', '+00:00'))
+        except ValueError:
+            # Try parsing as date only (YYYY-MM-DD)
+            since_dt = datetime.strptime(since, "%Y-%m-%d")
+
+    if until:
+        try:
+            until_dt = datetime.fromisoformat(until.replace('Z', '+00:00'))
+        except ValueError:
+            # Try parsing as date only (YYYY-MM-DD)
+            until_dt = datetime.strptime(until, "%Y-%m-%d")
+
+    async def generate():
+        temp_dir = None
+        try:
+            # Extract guidelines if provided
+            review_guidelines = None
+            if guidelines_file:
+                yield f"data: {json.dumps({'type': 'status', 'message': 'Extracting guidelines...'})}\n\n"
+                review_guidelines = await _extract_document_text(guidelines_file)
+
+            # Create temporary directory for cloning
+            temp_dir = tempfile.mkdtemp(prefix="code_review_clone_")
+            clone_path = Path(temp_dir) / "repo"
+
+            yield f"data: {json.dumps({'type': 'status', 'message': 'Cloning repository...'})}\n\n"
+
+            # Build git clone command with shallow clone for speed
+            clone_cmd = ["git", "clone", "--depth", "100"]  # Shallow clone for faster downloads
+
+            if branch:
+                clone_cmd.extend(["-b", branch])
+
+            clone_cmd.extend([repo_url, str(clone_path)])
+
+            # Clone the repository
+            result = subprocess.run(
+                clone_cmd,
+                capture_output=True,
+                text=True,
+                timeout=120  # 2 minute timeout for clone
+            )
+
+            if result.returncode != 0:
+                yield f"data: {json.dumps({'type': 'error', 'message': f'Failed to clone repository: {result.stderr}'})}\n\n"
+                return
+
+            yield f"data: {json.dumps({'type': 'status', 'message': 'Repository cloned. Analyzing commits...'})}\n\n"
+
+            # Initialize components
+            cfg = settings.model_copy(update={
+                "repo_path": clone_path,
+                "start_ref": from_ref,
+                "end_ref": to_ref,
+                "max_commits": max_commits,
+            })
+
+            _ensure_api_key(cfg)
+            service = _build_service(cfg)
+
+            # Get commits first to know total count
+            from src.commit_ingest import CommitQuery
+            query = CommitQuery(
+                start_ref=from_ref,
+                end_ref=to_ref,
+                max_count=max_commits,
+                since=since_dt,
+                until=until_dt
+            )
+
+            repository = GitRepository(clone_path)
+            commits = repository.get_commits(query)
+            total_commits = len(commits)
+
+            if total_commits == 0:
+                yield f"data: {json.dumps({'type': 'status', 'message': 'No commits found matching criteria.'})}\n\n"
+                yield f"data: {json.dumps({'type': 'complete', 'reviews': [], 'commit_count': 0})}\n\n"
+                return
+
+            yield f"data: {json.dumps({'type': 'total', 'total': total_commits})}\n\n"
+
+            # Process commits one by one with progress updates
+            reviews = []
+            agent = service._agent
+
+            for idx, change in enumerate(commits, start=1):
+                yield f"data: {json.dumps({'type': 'progress', 'current': idx, 'total': total_commits, 'commit': change.sha[:8], 'message': change.summary[:50]})}\n\n"
+
+                try:
+                    report = agent.review(change, custom_guidelines=review_guidelines, repo_path=clone_path)
+
+                    # Parse and add the review
+                    review_data = {
+                        "commit_hash": report.commit.sha[:8],
+                        "commit_message": report.commit.summary,
+                        "author": report.commit.author_name,
+                        "date": report.commit.authored_date.isoformat() if report.commit.authored_date else None,
+                        "summary": report.summary,
+                        "findings": [
+                            {
+                                "severity": s.severity,
+                                "file": s.file_path,
+                                "message": s.message,
+                                "solution": s.solution,
+                                "original_code": s.original_code,
+                            }
+                            for s in report.suggestions
+                        ],
+                        "security_summary": None
+                    }
+
+                    # Add security report if present
+                    if report.security_report:
+                        review_data["security_summary"] = {
+                            "risk_level": report.security_report.risk_level,
+                            "critical_count": report.security_report.critical_count,
+                            "high_count": report.security_report.high_count,
+                            "medium_count": report.security_report.medium_count,
+                            "low_count": report.security_report.low_count,
+                            "findings": [
+                                {
+                                    "finding_type": f.finding_type.value,
+                                    "severity": f.severity.value,
+                                    "file_path": f.file_path,
+                                    "line_number": f.line_number,
+                                    "title": f.title,
+                                    "description": f.description,
+                                    "cve_id": f.cve_id,
+                                    "recommendation": f.recommendation,
+                                    "solution": f.solution,
+                                    "original_code": f.original_code,
+                                }
+                                for f in report.security_report.findings
+                            ]
+                        }
+
+                    reviews.append(review_data)
+
+                    # Send the individual review result
+                    yield f"data: {json.dumps({'type': 'review', 'index': idx, 'review': review_data})}\n\n"
+
+                    # Small delay between commits to avoid rate limiting
+                    await asyncio.sleep(0.1)
+
+                except Exception as exc:
+                    logger.error(f"Failed to review commit {change.sha[:8]}: {exc}")
+                    yield f"data: {json.dumps({'type': 'error', 'message': f'Error reviewing commit {change.sha[:8]}: {str(exc)}'})}\n\n"
+                    continue
+
+            # Send completion message
+            yield f"data: {json.dumps({'type': 'complete', 'reviews': reviews, 'commit_count': len(reviews)})}\n\n"
+
+        except subprocess.TimeoutExpired:
+            yield f"data: {json.dumps({'type': 'error', 'message': 'Repository clone timed out'})}\n\n"
+        except Exception as exc:
+            logger.error(f"Stream review failed: {exc}")
+            yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
+        finally:
+            # Cleanup
+            if temp_dir and Path(temp_dir).exists():
+                try:
+                    shutil.rmtree(temp_dir)
+                except Exception:
+                    pass
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
 
 
 if __name__ == "__main__":
