@@ -43,6 +43,11 @@ class _ReviewModel(BaseModel):
 class LangChainReviewAgent(BaseReviewAgent):
     """LangChain-based agent that prompts an OpenAI-compatible chat model."""
 
+    # Token usage optimization settings
+    MAX_DIFF_CHARS_PER_FILE = 4000  # Truncate individual file diffs beyond this
+    MAX_TOTAL_DIFF_CHARS = 12000    # Truncate total diff content beyond this
+    MAX_FILES_TO_REVIEW = 10        # Skip files beyond this count (review most important)
+
     def __init__(
         self,
         *,
@@ -52,9 +57,9 @@ class LangChainReviewAgent(BaseReviewAgent):
         llm: Optional[ChatOpenAI] = None,
         enable_json_mode: bool = False,
         enable_security_scan: bool = True,
-        max_retries: int = 3,
-        initial_retry_delay: float = 2.0,
-        max_retry_delay: float = 30.0,
+        max_retries: int = 5,
+        initial_retry_delay: float = 5.0,
+        max_retry_delay: float = 60.0,
     ) -> None:
         self._parser = PydanticOutputParser(pydantic_object=_ReviewModel)
         self._enable_security_scan = enable_security_scan
@@ -224,10 +229,54 @@ class LangChainReviewAgent(BaseReviewAgent):
         raise RuntimeError("Unexpected retry loop exit")
 
     def _render_diffs(self, file_changes) -> str:
+        """Render file diffs with truncation to reduce token usage."""
         sections = []
-        for change in file_changes:
+        total_chars = 0
+
+        # Prioritize important files (non-test, non-config files first)
+        def file_priority(fc):
+            path_lower = fc.path.lower()
+            # Deprioritize test files, configs, and generated files
+            if 'test' in path_lower or '_test' in path_lower or 'spec' in path_lower:
+                return 2
+            if any(name in path_lower for name in ['package-lock', 'yarn.lock', '.lock', '.min.', 'generated']):
+                return 3
+            if any(ext in path_lower for ext in ['.json', '.yaml', '.yml', '.toml', '.ini', '.cfg']):
+                return 1
+            return 0  # Source code files get highest priority
+
+        sorted_changes = sorted(file_changes, key=file_priority)
+
+        for idx, change in enumerate(sorted_changes):
+            # Skip files beyond the limit
+            if idx >= self.MAX_FILES_TO_REVIEW:
+                skipped_count = len(file_changes) - self.MAX_FILES_TO_REVIEW
+                sections.append(f"\n[... {skipped_count} additional file(s) not shown to reduce token usage ...]")
+                break
+
             header = f"File: {change.path} (status={change.status})"
-            sections.append(f"{header}\n{change.diff}")
+            diff_content = change.diff or ""
+
+            # Truncate individual file diff if too large
+            if len(diff_content) > self.MAX_DIFF_CHARS_PER_FILE:
+                diff_content = diff_content[:self.MAX_DIFF_CHARS_PER_FILE]
+                diff_content += f"\n\n[... diff truncated ({len(change.diff)} chars total) ...]"
+
+            section = f"{header}\n{diff_content}"
+
+            # Check total size limit
+            if total_chars + len(section) > self.MAX_TOTAL_DIFF_CHARS:
+                remaining = self.MAX_TOTAL_DIFF_CHARS - total_chars
+                if remaining > 500:  # Only include if there's meaningful space
+                    section = section[:remaining] + "\n\n[... remaining content truncated to reduce token usage ...]"
+                    sections.append(section)
+                else:
+                    sections.append(f"\n[... {len(file_changes) - idx} file(s) not shown to reduce token usage ...]")
+                break
+
+            sections.append(section)
+            total_chars += len(section)
+
         return "\n\n".join(sections)
 
     def _format_security_findings(self, security_report) -> str:

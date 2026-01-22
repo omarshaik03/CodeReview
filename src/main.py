@@ -949,12 +949,54 @@ async def review_from_url_stream(
                     # Send the individual review result
                     yield f"data: {json.dumps({'type': 'review', 'index': idx, 'review': review_data})}\n\n"
 
-                    # Small delay between commits to avoid rate limiting
-                    await asyncio.sleep(0.1)
+                    # Delay between commits to avoid rate limiting (5 seconds)
+                    # This helps spread out API calls and reduces 429 errors
+                    if idx < total_commits:
+                        await asyncio.sleep(5.0)
 
                 except Exception as exc:
+                    error_msg = str(exc)
                     logger.error(f"Failed to review commit {change.sha[:8]}: {exc}")
-                    yield f"data: {json.dumps({'type': 'error', 'message': f'Error reviewing commit {change.sha[:8]}: {str(exc)}'})}\n\n"
+
+                    # Check if it's a rate limit error
+                    if '429' in error_msg or 'RateLimitReached' in error_msg or 'rate limit' in error_msg.lower():
+                        yield f"data: {json.dumps({'type': 'rate_limit', 'message': f'Rate limit reached on commit {change.sha[:8]}. Waiting 60s before retrying...', 'commit': change.sha[:8]})}\n\n"
+                        # Wait longer for rate limit errors
+                        await asyncio.sleep(60)
+                        # Retry the commit once after waiting
+                        try:
+                            report = agent.review(change, custom_guidelines=review_guidelines, repo_path=clone_path)
+                            review_data = {
+                                "commit_hash": report.commit.sha[:8],
+                                "commit_message": report.commit.summary,
+                                "author": report.commit.author_name,
+                                "date": report.commit.authored_date.isoformat() if report.commit.authored_date else None,
+                                "summary": report.summary,
+                                "findings": [
+                                    {"severity": s.severity, "file": s.file_path, "message": s.message, "solution": s.solution, "original_code": s.original_code}
+                                    for s in report.suggestions
+                                ],
+                                "security_summary": None
+                            }
+                            if report.security_report:
+                                review_data["security_summary"] = {
+                                    "risk_level": report.security_report.risk_level,
+                                    "critical_count": report.security_report.critical_count,
+                                    "high_count": report.security_report.high_count,
+                                    "medium_count": report.security_report.medium_count,
+                                    "low_count": report.security_report.low_count,
+                                    "findings": [
+                                        {"finding_type": f.finding_type.value, "severity": f.severity.value, "file_path": f.file_path, "line_number": f.line_number, "title": f.title, "description": f.description, "cve_id": f.cve_id, "recommendation": f.recommendation, "solution": f.solution, "original_code": f.original_code}
+                                        for f in report.security_report.findings
+                                    ]
+                                }
+                            reviews.append(review_data)
+                            yield f"data: {json.dumps({'type': 'review', 'index': idx, 'review': review_data})}\n\n"
+                        except Exception as retry_exc:
+                            logger.error(f"Retry failed for commit {change.sha[:8]}: {retry_exc}")
+                            yield f"data: {json.dumps({'type': 'error', 'message': f'Failed to review commit {change.sha[:8]} after retry: {str(retry_exc)}'})}\n\n"
+                    else:
+                        yield f"data: {json.dumps({'type': 'error', 'message': f'Error reviewing commit {change.sha[:8]}: {error_msg}'})}\n\n"
                     continue
 
             # Send completion message
